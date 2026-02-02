@@ -8,21 +8,10 @@ from pynput import mouse
 import pyautogui
 from PIL import Image
 mouse = Controller()
-def create_socket(port):# a method that receives a port and creates a socket for that port, therefore allowing multiple client-server connections at the same time
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(("10.100.102.35", port))
-    server.listen()
-    print("waiting for connection...")
-    try:
-        cs, ca = server.accept()
-        print("Connection established!")
-        return cs
-    except Exception as e:
-        print("connection failed: ", e)
+
 
 #mouse
-def get_movements():# a method that receives the mouse movements from the controlling computer and moves the mouse accordingly
-    cs = create_socket(10000)
+def get_movements(cs):# a method that receives the mouse movements from the controlling computer and moves the mouse accordingly
     width, height = pyautogui.size()# get the size of the local screen and send it to the controlling computer to adjust the coordinates for the screen size ratio
     size = str((width, height))
     cs.send(size.encode())
@@ -35,8 +24,7 @@ def get_movements():# a method that receives the mouse movements from the contro
 
 
 
-def get_clicks():# a method that receives the mouse clicks from the controlling computer and performs them on the local computer
-    cs = create_socket(10001)
+def get_clicks(cs):# a method that receives the mouse clicks from the controlling computer and performs them on the local computer
     while True:
         data = cs.recv(1024)
         if data == b"mouse pressed":
@@ -57,10 +45,9 @@ def get_clicks():# a method that receives the mouse clicks from the controlling 
                 mouse.release(Button.middle)
 
 
-def get_scrolls():# a method that receives the mouse scrolls from the controlling computer and performs them on the local computer
-    scroll_socket = create_socket(10002)
+def get_scrolls(cs):# a method that receives the mouse scrolls from the controlling computer and performs them on the local computer
     while True:
-        data = scroll_socket.recv(1024).decode()
+        data = cs.recv(1024).decode()
         if not data:
             break
         parts = data.strip().split(",")
@@ -69,9 +56,8 @@ def get_scrolls():# a method that receives the mouse scrolls from the controllin
             dy = int(parts[i + 1])
             mouse.scroll(dx,dy)
 
-def get_keys():# a method that receives the key presses and releases from the controlling computer and performs them on the local computer
-    key_client = create_socket(10003)
-    key_file = key_client.makefile('r')
+def get_keys(cs):# a method that receives the key presses and releases from the controlling computer and performs them on the local computer
+    key_file = cs.makefile('r')
     while True:
         parts = key_file.readline().strip().split(":")
         key = parts[1]
@@ -80,8 +66,7 @@ def get_keys():# a method that receives the key presses and releases from the co
         elif parts[0] == "up":
             keyboard.release(key)
 
-def send_screen_image():# a method that sends screenshots of the local computer to the controlling computer in order to stream the screen
-    image_client = create_socket(10004)
+def send_screen_image(cs):# a method that sends screenshots of the local computer to the controlling computer in order to stream the screen
     file_path = "C:\\Users\\elade\\OneDrive\\Pictures\\screen_for_remotedesktop.png"
     converted_file_path = file_path = "C:\\Users\\elade\\OneDrive\\Pictures\\screen_for_remotedesktop.jpeg"
     while True:
@@ -91,29 +76,31 @@ def send_screen_image():# a method that sends screenshots of the local computer 
         with open(file_path, "rb") as f:
             data = f.read(1024)
             while data:
-                image_client.send(data)
-                rsp = image_client.recv(1024)
+                cs.send(data)
+                rsp = cs.recv(1024)
                 if rsp == b"Yes":
                     data = f.read(1024)
                     continue
                 else:
                     break
-        image_client.send(b"EOF")
+        cs.send(b"EOF")
         os.remove(converted_file_path)
 
+if __name__ == "__main__":
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("10.100.102.35", 10000)) 
+    server.listen(5)
+    
+    subsystems = {"0": get_movements, "1": get_clicks, "2": get_scrolls, "3": get_keys, "4": send_screen_image}
+    print("Server online. Waiting for 5 connections on port 10000...")
+    
+    count = 0
+    while count < 5:
+        cs, addr = server.accept()
+        choice = cs.recv(1).decode() # Identify which thread this is
+        if choice in subsystems:
+            Thread(target=subsystems[choice], args=(cs,), daemon=True).start()
+            count += 1
 
-t1 = Thread(target=get_movements)
-t2 = Thread(target=get_clicks)
-t3 = Thread(target=get_scrolls)
-t4 = Thread(target= get_keys)
-t5 = Thread(target= send_screen_image)
-t1.start()
-t2.start()
-t3.start()
-t4.start()
-t5.start()
-t1.join()
-t2.join()
-t3.join()
-t4.join()
-t5.join()
+    while True:
+        time.sleep(10)

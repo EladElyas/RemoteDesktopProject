@@ -2,28 +2,31 @@ import keyboard
 import socket
 import os
 from threading import Thread
+from numpy import choose
 from pynput.mouse import Button, Controller
 from pynput import mouse
 from functools import partial
 from PIL import Image, ImageTk
 import tkinter as tk
 import pyautogui
-root = tk.Tk()
+import io
 
-def create_socket(port):#a method that receives a port and creates a socket for that port, therefore allowing multiple client-server connections at the same time
+def connect_subsystem(id_number):
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client.connect(("10.100.102.35", port))
+        client.connect(("10.100.102.35", 10000))
+        client.send(str(id_number).encode())      # Send ID immediately
+        return client
     except Exception as e:
-        print("connection failed: ", e)
-    return client
+        print(f"Connection {id_number} failed: {e}")
+        return None
 #keyboard
 def send_key(client, event):#sending the key press or release event to the server
     message = f"{event.event_type}:{event.name}\n"
     client.send(message.encode())
     
-def listen_for_keys():#a method that listens for keyboard events
-    client = create_socket(10003)
+def listen_for_keys():#a methodhat listens for keyboard events
+    client = connect_subsystem("3")
     keyboard.hook(partial(send_key, client))
     keyboard.wait()
 
@@ -38,7 +41,7 @@ def click_detected(client, x, y, button, pressed):#a method that sends whether t
 
 
 def listen_for_clicks():#a method that listens for mouse clicks
-    click_client = create_socket(10001)
+    click_client = connect_subsystem("1")
     click_callback = partial(click_detected, click_client)
     with mouse.Listener(on_click= click_callback) as listener:
         listener.join()
@@ -47,7 +50,7 @@ def scroll_detected(client, x, y, dx, dy):#a method that sends how much the mous
     client.send(f"{dx},{dy}".encode())
 
 def listen_for_scrolls():#a method that listens for mouse scrolls
-    scroll_client = create_socket(10002)
+    scroll_client = connect_subsystem("2")
     scroll_callback = partial(scroll_detected, scroll_client)
     with mouse.Listener(on_scroll= scroll_callback) as listener:
         listener.join()
@@ -63,7 +66,7 @@ def movement_detected(client, height_ratio, width_ratio, x, y):# a method that s
 
 def listen_for_movements():# a method that listens for mouse movements and sends the ratio of the coordinates to the server in order to adjust the mouse position
     #according to the remote screen size in relation to the local screen size
-    movement_client = create_socket(10000)
+    movement_client = connect_subsystem("0")
     remote_size = movement_client.recv(1024).decode()
     remote_width, remote_height = remote_size.strip().replace("(", "").replace(")", "").replace(" ", "").split(",")
     local_width, local_height = pyautogui.size()
@@ -75,36 +78,73 @@ def listen_for_movements():# a method that listens for mouse movements and sends
         listener.join() 
 
         
-def receive_screen_image(image_client, file_path):# a method that receives the screen image from the server and saves it to a file
-        with open(file_path, "wb") as f:
-            while True:
-                data = image_client.recv(1024)
-                if data == b"EOF":
-                    break
-                else:
-                    image_client.send(b"Yes")
-                    f.write(data)
+def receive_screen_image(image_client):
+    image_buffer = io.BytesIO()
+    
+    while True:
+        data = image_client.recv(1024)
+        if b"EOF" in data:
+            image_buffer.write(data.split(b"EOF")[0])
+            break
+        else:
+            image_client.send(b"Yes")
+            image_buffer.write(data)
+    image_buffer.seek(0)
+    return image_buffer
 
 def display_screen_image():# a method that displays the screen image received from the server in a tkinter window, and then deletes the image file before updating the image
-    file_path = "c:\\Users\\אלעד\\Downloads\\screen_image.jpeg"
-    image_client = create_socket(10004)
-    root.attributes("-fullscreen", True)
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    image_client = connect_subsystem("4")
+    root.attributes('-fullscreen', True)
+    resolution = tuple(pyautogui.size())
     label = tk.Label(root)
     label.pack()
     while True:
-        receive_screen_image(image_client, file_path)
-        image = Image.open(file_path)
-        image = image.resize((screen_width, screen_height))
+        virtual_file = receive_screen_image(image_client)
+        image = Image.open(virtual_file)
+        image = image.resize(resolution)
         photo = ImageTk.PhotoImage(image)
         label.config(image=photo)
+        label.image = photo
         root.update()
-        os.remove(file_path)
 
 
+def connection_list(choose):# a method that displays a tkinter window with an entry box to enter the connection ID of the desired connection to connect to
+    choose.title("Available Connections Board")
+    choose.attributes('-fullscreen', True)
 
-t1 = Thread(target= listen_for_movements)
+    #creating an empty label to act as an anchor, in order to place the other widgets in the desired positions
+    buffer_label = tk.Label(choose, text="")
+    buffer_label.grid(row=0, column=0, padx=340, pady=10)
+
+    choice_label = tk.Label(choose, text="Choose a connection ID to connect to:")
+    choice_label.grid(row=0, column=1, padx=10, pady=10)
+    choice_label.config(font = ("Arial", 20))
+
+    choice_label_bar = tk.Entry(choose)
+    choice_label_bar.grid(row=5, column=1, padx=10, pady=10)
+    choice_label_bar.config(font = ("Arial", 20))
+
+    submit_button = tk.Button(choose, text="Connect", command=lambda: choose.quit())
+    submit_button.grid(row=7, column=1, padx=10, pady=10)
+    submit_button.config(font = ("Arial", 20))
+    choose.mainloop()
+    return choice_label_bar.get()
+
+
+def choose_connection():# a method that allows the user to choose which connection to connect to from a list of available connections
+    
+    choose = tk.Tk()
+    target_ip = connection_list(choose)
+    choose.destroy()
+    print(target_ip)
+    return target_ip
+
+
+choose_connection()
+
+root = tk.Tk()
+
+t1 = Thread(target= listen_for_movements)        
 t2 = Thread(target= listen_for_clicks)
 t3 = Thread(target= listen_for_scrolls)
 t4 = Thread(target= listen_for_keys)
@@ -116,13 +156,12 @@ t4.start()
 t5.start()
 
 root.mainloop()
-
 t1.join()
 t2.join()
 t3.join()
 t4.join()
 t5.join()
-    
+        
 
 
 
